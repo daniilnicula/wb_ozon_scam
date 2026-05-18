@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>Парсер цен — WB / OZON</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="wrap">
+    <header>
+        <div class="header-left">
+            <h1>Парсер цен</h1>
+            <label class="profile-label">
+                <span>Список:</span>
+                <select id="profile-select">
+                    {% for profile in profiles %}
+                    <option value="{{ profile.id }}" {% if profile.id == current_profile_id %}selected{% endif %}>
+                        {{ profile.name }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+        </div>
+        <div class="actions">
+            <a href="{{ url_for('settings') }}" class="link-btn">Настройки</a>
+            <button id="import-btn" type="button" class="link-btn">Импорт TXT</button>
+            <a id="export-btn" href="{% if current_profile_id %}{{ url_for('export_xlsx', profile_id=current_profile_id) }}{% else %}{{ url_for('export_xlsx') }}{% endif %}">Экспорт XLSX</a>
+            <form action="{{ url_for('clear_items') }}" method="post" onsubmit="return confirm('Удалить все строки?');" style="display:inline;">
+                <input type="hidden" name="profile_id" value="{{ current_profile_id }}">
+                <button type="submit" class="link-btn">Очистить всё</button>
+            </form>
+            <button id="refresh-btn" class="primary">Обновить все цены</button>
+            <span id="status" class="status hidden"></span>
+        </div>
+    </header>
+
+    <section class="add-form">
+        <form action="{{ url_for('add') }}" method="post" class="row">
+            <input type="url" name="url" placeholder="Ссылка на товар WB или OZON" required>
+            <input type="hidden" name="profile_id" value="{{ current_profile_id }}">
+            <button type="submit">Добавить</button>
+        </form>
+    </section>
+
+    <form id="import-form" action="{{ url_for('import_txt') }}" method="post" enctype="multipart/form-data" class="hidden">
+        <input id="import-file" type="file" name="file" accept=".txt">
+        <input type="hidden" name="profile_id" value="{{ current_profile_id }}">
+    </form>
+
+    <section>
+        <table>
+            <thead>
+                <tr>
+                    <th class="small">№</th>
+                    <th class="small">Маркет</th>
+                    <th class="seller">Продавец</th>
+                    <th class="col-title">Название</th>
+                    <th>Цена</th>
+                    <th>Цена по карте</th>
+                    <th>Ссылка</th>
+                    <th>Обновлено</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in items %}
+                <tr class="{% if item.price == 'ошибка' or item.title == 'ошибка' %}err{% endif %}">
+                    <td class="small">{{ loop.index }}</td>
+                    <td class="small">{{ item.market }}</td>
+                    <td class="seller" title="{{ item.seller or '' }}">{{ (item.seller[:15] if item.seller and item.seller|length > 15 else item.seller) or '—' }}</td>
+                    <td class="title">{{ item.title or '—' }}</td>
+                    <td class="num{% if item.price and item.price != 'ошибка' %}{% if item.price|int == min_price %} price-min{% elif item.price|int == max_price %} price-max{% endif %}{% endif %}">{{ item.price or '—' }}</td>
+                    <td class="num">{{ item.price_card or '—' }}</td>
+                    <td class="url"><a href="{{ item.url }}" target="_blank" rel="noopener">ссылка</a></td>
+                    <td class="dim">{{ item.updated_at or '—' }}</td>
+                    <td>
+                        <form action="{{ url_for('delete', item_id=item.id) }}" method="post" onsubmit="return confirm('Удалить?')">
+                            <input type="hidden" name="profile_id" value="{{ current_profile_id }}">
+                            <button type="submit" class="danger">×</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not items %}
+                <tr><td colspan="8" class="empty">Пока пусто. Добавь первую ссылку или импортируй TXT.</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </section>
+</div>
+
+<script>
+const btn = document.getElementById('refresh-btn');
+const statusEl = document.getElementById('status');
+const importBtn = document.getElementById('import-btn');
+const importFile = document.getElementById('import-file');
+const profileSelect = document.getElementById('profile-select');
+
+function updateExportLink() {
+    const exportBtn = document.getElementById('export-btn');
+    if (!exportBtn || !profileSelect) return;
+    const params = new URLSearchParams(window.location.search);
+    params.set('profile_id', profileSelect.value);
+    exportBtn.href = `{{ url_for('export_xlsx') }}` + '?' + params.toString();
+}
+
+if (profileSelect) {
+    profileSelect.addEventListener('change', () => {
+        const params = new URLSearchParams(window.location.search);
+        params.set('profile_id', profileSelect.value);
+        window.location.search = params.toString();
+    });
+}
+
+async function poll() {
+    const r = await fetch('/status');
+    const s = await r.json();
+    if (s.running) {
+        statusEl.classList.remove('hidden');
+        statusEl.textContent = `Парсинг... ${s.done}/${s.total} (ошибок: ${s.err})`;
+        setTimeout(poll, 1500);
+    } else {
+        if (s.message) {
+            statusEl.textContent = s.message + ' — детали в Настройках';
+        } else if (s.total > 0) {
+            statusEl.textContent = `Готово: успешно ${s.ok}, ошибок ${s.err}`;
+            setTimeout(() => location.reload(), 800);
+        } else {
+            statusEl.classList.add('hidden');
+        }
+        btn.disabled = false;
+    }
+}
+
+btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    statusEl.classList.remove('hidden');
+    statusEl.textContent = 'Запуск...';
+    const fd = new FormData();
+    fd.append('profile_id', profileSelect.value);
+    const r = await fetch('/refresh', { method: 'POST', body: fd });
+    if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        statusEl.textContent = j.message || 'Ошибка запуска';
+        btn.disabled = false;
+        return;
+    }
+    poll();
+});
+
+importBtn.addEventListener('click', () => importFile.click());
+
+importFile.addEventListener('change', async () => {
+    if (!importFile.files.length) return;
+    const fd = new FormData();
+    fd.append('file', importFile.files[0]);
+    fd.append('profile_id', document.querySelector('input[name="profile_id"]').value || '');
+    statusEl.classList.remove('hidden');
+    statusEl.textContent = 'Импорт...';
+    const r = await fetch('/import', { method: 'POST', body: fd });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+        statusEl.textContent = j.message || 'Ошибка импорта';
+        return;
+    }
+    statusEl.textContent = `Импортировано: ${j.added}, пропущено: ${j.skipped}`;
+    setTimeout(() => {
+        const params = new URLSearchParams(window.location.search);
+        location.search = params.toString();
+    }, 900);
+    if (j.running) {
+        btn.disabled = true;
+        poll();
+    }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>Настройки — Парсер цен</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="settings-page">
+<div class="wrap">
+    <header>
+        <h1>Настройки</h1>
+        <div class="actions">
+            <a href="{{ url_for('index') }}" class="link-btn">← К таблице</a>
+        </div>
+    </header>
+
+    <section class="settings-card">
+        <form action="{{ url_for('add_profile') }}" method="post" class="settings-form">
+            <label>
+                <span>Добавить список ссылок</span>
+                <div class="row">
+                    <input type="text" name="profile_name" placeholder="Название списка" required>
+                    <button type="submit" class="primary">Сохранить</button>
+                </div>
+            </label>
+        </form>
+
+        {% if profiles %}
+        <p class="hint">
+            профили доступные на главной странице
+        </p>
+        <div class="profiles-list">
+            {% for profile in profiles %}
+            <div class="profile-item">
+                <span>{{ profile.name }}</span>
+                <div class="profile-actions">
+                    <a href="{{ url_for('export_txt', profile_id=profile.id) }}" class="link-btn">to txt</a>
+                    {% if profile.name != 'Основной' %}
+                    <form action="{{ url_for('delete_profile', profile_id=profile.id) }}" method="post" onsubmit="return confirm('Удалить профиль «{{ profile.name }}» и все связанные товары?');" style="display:inline;">
+                        <button type="submit" class="danger">×</button>
+                    </form>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <p class="hint">
+            Используется готовый selenium-профиль для авторизации. Перед обновлением цен закрой браузер с этим профилем.
+        </p>
+
+        <form action="{{ url_for('settings') }}" method="post" class="settings-form">
+            <label class="row checkbox">
+                <input type="checkbox" name="headless" id="headless" {% if cfg.headless %}checked{% endif %}>
+                <span>Headless (скрытый браузер)</span>
+            </label>
+            <small class="dim">
+                Если цены приходят как у неавторизованного пользователя — сними галку.
+                Откроется реальное окно Chrome с твоим аккаунтом.
+            </small>
+
+            <label class="row checkbox">
+                <input type="checkbox" name="disable_media" id="disable_media" {% if cfg.disable_media %}checked{% endif %}>
+                <span>Отключить загрузку фото и видео</span>
+            </label>
+            <small class="dim">
+                Ускоряет парсинг и снижает потребление трафика. Текст и цены загружаются всё равно.
+            </small>
+
+            <div class="command-block">
+                <pre>"C:\Program Files\Google\Chrome\Application\chrome.exe" ^
+--user-data-dir="C:\selenium_profile" ^
+--profile-directory="Profile 1"</pre>
+                <small class="dim">Это позволяет запускать профиль selenium, в котором и надо залогиниться.</small>
+            </div>
+
+            <div class="row">
+                <button type="submit" class="primary">Сохранить</button>
+                <button type="button" id="test-chrome-btn">Тест Chrome</button>
+                <span id="test-result" class="status hidden"></span>
+            </div>
+        </form>
+    </section>
+
+    <section class="settings-card">
+        <div class="row" style="justify-content: space-between;">
+            <h2 style="margin: 0; font-size: 18px;">Журнал ошибок</h2>
+            <button type="button" id="clear-errors-btn">Очистить</button>
+        </div>
+        <small class="dim">Сюда падают ошибки запуска Chrome и парсинга. Если что-то не работает — смотри сюда.</small>
+
+        <div id="errors-list">
+            {% if errors %}
+            <table class="errors-table">
+                <thead>
+                    <tr><th>Время</th><th>Источник</th><th>Сообщение</th></tr>
+                </thead>
+                <tbody>
+                    {% for e in errors %}
+                    <tr>
+                        <td class="dim">{{ e.ts }}</td>
+                        <td>{{ e.source }}</td>
+                        <td class="err-text">{{ e.message }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="dim">Ошибок пока нет.</p>
+            {% endif %}
+        </div>
+    </section>
+</div>
+
+<script>
+const testBtn = document.getElementById('test-chrome-btn');
+const testResult = document.getElementById('test-result');
+
+testBtn.addEventListener('click', async () => {
+    testBtn.disabled = true;
+    testResult.classList.remove('hidden');
+    testResult.textContent = 'Открываю Chrome...';
+    try {
+        const r = await fetch('/test_chrome', { method: 'POST' });
+        const j = await r.json();
+        testResult.textContent = j.message || (j.ok ? 'OK' : 'Ошибка');
+        if (!j.ok) {
+            setTimeout(() => location.reload(), 1500);
+        }
+    } catch (e) {
+        testResult.textContent = 'Сеть: ' + e.message;
+    } finally {
+        testBtn.disabled = false;
+    }
+});
+
+document.getElementById('clear-errors-btn').addEventListener('click', async () => {
+    const r = await fetch('/clear_errors', { method: 'POST' });
+    if (r.ok) location.reload();
+});
+</script>
+</body>
+</html>
