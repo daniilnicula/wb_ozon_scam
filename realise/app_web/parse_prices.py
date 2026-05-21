@@ -143,8 +143,13 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
 
-def build_driver(headless: bool = True, disable_media: bool = False) -> webdriver.Chrome:
+def build_driver(
+    headless: bool = True,
+    disable_media: bool = False,
+    page_load_strategy: str = "normal",
+) -> webdriver.Chrome:
     options = Options()
+    options.page_load_strategy = page_load_strategy
 
     if headless:
         options.add_argument("--headless=new")
@@ -172,6 +177,7 @@ def build_driver(headless: bool = True, disable_media: bool = False) -> webdrive
         service=Service(ChromeDriverManager().install()),
         options=options,
     )
+    driver.set_page_load_timeout(PAGE_TIMEOUT)
 
     return driver
 
@@ -198,6 +204,28 @@ def try_open_chrome(
 def clean_price(text: str) -> str:
     digits = re.sub(r"\D", "", text or "")
     return digits or ERROR
+
+
+def page_indicates_missing_product(driver: webdriver.Chrome) -> bool:
+    try:
+        body = driver.find_element(By.TAG_NAME, "body").text.lower()
+    except WebDriverException:
+        return False
+
+    missing_tokens = [
+        "товар отсутствует",
+        "товар не найден",
+        "нет в наличии",
+        "товар закончился",
+        "sold out",
+        "out of stock",
+        "not found",
+        "page not found",
+        "product not found",
+        "такого товара нет",
+        "товар удален",
+    ]
+    return any(token in body for token in missing_tokens)
 
 
 def extract_text(driver: webdriver.Chrome, selectors: list[str], wait: WebDriverWait | None = None) -> str:
@@ -228,8 +256,11 @@ def extract_text(driver: webdriver.Chrome, selectors: list[str], wait: WebDriver
     return ""
 
 
-def parse_ozon(driver: webdriver.Chrome, url: str) -> dict:
-    driver.get(url)
+def parse_ozon(driver: webdriver.Chrome, url: str, navigate: bool = True) -> dict:
+    if navigate:
+        driver.get(url)
+    if page_indicates_missing_product(driver):
+        return {"title": ERROR, "seller": "", "price": ERROR, "price_card": ERROR}
     wait = WebDriverWait(driver, WAIT_TIMEOUT)
 
     title = ERROR
@@ -274,8 +305,11 @@ def parse_ozon(driver: webdriver.Chrome, url: str) -> dict:
     return {"title": title, "seller": seller, "price": price, "price_card": price_card}
 
 
-def parse_wb(driver: webdriver.Chrome, url: str) -> dict:
-    driver.get(url)
+def parse_wb(driver: webdriver.Chrome, url: str, navigate: bool = True) -> dict:
+    if navigate:
+        driver.get(url)
+    if page_indicates_missing_product(driver):
+        return {"title": ERROR, "seller": "", "price": ERROR, "price_card": ""}
     wait = WebDriverWait(driver, WAIT_TIMEOUT)
 
     title = ERROR
@@ -303,11 +337,7 @@ def parse_wb(driver: webdriver.Chrome, url: str) -> dict:
         wait,
     )
 
-    try:
-        driver.execute_script("window.scrollBy(0, 400);")
-    except WebDriverException:
-        pass
-    time.sleep(2)
+    time.sleep(1)
 
     selectors = [
         "ins[class*='priceBlockFinalPrice']",
@@ -328,8 +358,11 @@ def parse_wb(driver: webdriver.Chrome, url: str) -> dict:
     return {"title": title, "seller": seller, "price": price, "price_card": ""}
 
 
-def parse_yandex(driver: webdriver.Chrome, url: str) -> dict:
-    driver.get(url)
+def parse_yandex(driver: webdriver.Chrome, url: str, navigate: bool = True) -> dict:
+    if navigate:
+        driver.get(url)
+    if page_indicates_missing_product(driver):
+        return {"title": ERROR, "seller": "", "price": ERROR, "price_card": ERROR}
     wait = WebDriverWait(driver, WAIT_TIMEOUT)
 
     title = ERROR
@@ -361,45 +394,88 @@ def parse_yandex(driver: webdriver.Chrome, url: str) -> dict:
     if seller and len(seller) > 15:
         seller = seller[:15]
 
-    try:
-        driver.execute_script("window.scrollBy(0, 400);")
-    except WebDriverException:
-        pass
     time.sleep(1)
 
-    selectors_price = [
-        "span.ds-text[class*='ds-text_color_text-secondary'][class*='ds-text_typography_headline']",
-        "span.ds-text[class*='headline-4']",
-        "span[class*='price']",
-    ]
-    for sel in selectors_price:
-        try:
-            el = driver.find_element(By.CSS_SELECTOR, sel)
-            text = el.text
-            if any(ch.isdigit() for ch in text):
-                price = clean_price(text)
-                break
-        except WebDriverException:
-            continue
+    try:
+        details_button = wait.until(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, "div.ds-clickable[role='button']")
+            )
+        )
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", details_button)
+        driver.execute_script("arguments[0].click();", details_button)
 
-    selectors_price_card = [
-        "span.ds-text[class*='ds-text_color_price-term'][class*='ds-text_typography_headline']",
-        "span.ds-text[class*='ds-text_color_price-term']",
-        "span[class*='price-card']",
-    ]
-    for sel in selectors_price_card:
-        try:
-            el = driver.find_element(By.CSS_SELECTOR, sel)
-            text = el.text
-            if any(ch.isdigit() for ch in text):
-                price_card = clean_price(text)
-                break
-        except WebDriverException:
-            continue
+        modal = wait.until(
+            EC.visibility_of_element_located(
+                (By.CSS_SELECTOR, "div.cia-vs[data-zone-name='priceDetailsPopup']")
+            )
+        )
 
-    if price == ERROR and price_card != ERROR:
-        price = price_card
-        price_card = ERROR
+        for sel in [
+            "span.ds-text_color_price-term.ds-text_typography_headline-4",
+            "span.ds-text_color_price-term",
+        ]:
+            try:
+                el = modal.find_element(By.CSS_SELECTOR, sel)
+                text = el.text
+                if any(ch.isdigit() for ch in text):
+                    price_card = clean_price(text)
+                    break
+            except WebDriverException:
+                continue
+
+        for sel in [
+            "span.ds-text_color_text-secondary.ds-text_typography_headline-4",
+            "span.ds-text_color_text-secondary.ds-text_typography_headline",
+        ]:
+            try:
+                el = modal.find_element(By.CSS_SELECTOR, sel)
+                text = el.text
+                if any(ch.isdigit() for ch in text):
+                    price = clean_price(text)
+                    break
+            except WebDriverException:
+                continue
+
+        try:
+            close_button = modal.find_element(By.CSS_SELECTOR, "button.ds-modal__close")
+            driver.execute_script("arguments[0].click();", close_button)
+        except WebDriverException:
+            pass
+    except (TimeoutException, WebDriverException):
+        pass
+
+    if price == ERROR:
+        selectors_price = [
+            "span.ds-text[class*='ds-text_color_text-secondary'][class*='ds-text_typography_headline']",
+            "span.ds-text[class*='headline-4']",
+            "span[class*='price']",
+        ]
+        for sel in selectors_price:
+            try:
+                el = driver.find_element(By.CSS_SELECTOR, sel)
+                text = el.text
+                if any(ch.isdigit() for ch in text):
+                    price = clean_price(text)
+                    break
+            except WebDriverException:
+                continue
+
+    if price_card == ERROR:
+        selectors_price_card = [
+            "span.ds-text[class*='ds-text_color_price-term'][class*='ds-text_typography_headline']",
+            "span.ds-text[class*='ds-text_color_price-term']",
+            "span[class*='price-card']",
+        ]
+        for sel in selectors_price_card:
+            try:
+                el = driver.find_element(By.CSS_SELECTOR, sel)
+                text = el.text
+                if any(ch.isdigit() for ch in text):
+                    price_card = clean_price(text)
+                    break
+            except WebDriverException:
+                continue
 
     return {"title": title, "seller": seller, "price": price, "price_card": price_card}
 
@@ -410,28 +486,62 @@ def parse_rows(
     chrome_profile: str = "Default",
     headless: bool = True,
     disable_media: bool = False,
+    concurrency: int = 1,
+    driver: webdriver.Chrome | None = None,
+    dispose_driver: bool = True,
 ) -> list[dict]:
     results = []
-    driver = None
+    created_driver = False
     try:
-        driver = build_driver(headless=headless, disable_media=disable_media)
-        for item in rows:
+        concurrency = max(1, min(20, int(concurrency or 1)))
+        strategy = "none" if concurrency > 1 else "normal"
+        if driver is None:
+            driver = build_driver(
+                headless=headless,
+                disable_media=disable_media,
+                page_load_strategy=strategy,
+            )
+            created_driver = True
+        else:
+            try:
+                if not driver.session_id:
+                    raise WebDriverException("Driver session has ended")
+            except Exception:
+                driver = build_driver(
+                    headless=headless,
+                    disable_media=disable_media,
+                    page_load_strategy=strategy,
+                )
+                created_driver = True
+
+            if driver is not None:
+                try:
+                    handles = driver.window_handles
+                    for extra in handles[1:]:
+                        try:
+                            driver.switch_to.window(extra)
+                            driver.close()
+                        except WebDriverException:
+                            pass
+                    driver.switch_to.window(driver.window_handles[0])
+                    driver.get("about:blank")
+                except WebDriverException:
+                    pass
+
+        def parse_item(item: dict, navigate: bool = True) -> dict:
             row_id = item.get("row") if "row" in item else item.get("id")
             market = (item.get("market") or "").strip().upper()
             url = (item.get("url") or "").strip()
-
             entry = {"row": row_id, "title": ERROR, "price": ERROR, "price_card": "", "seller": ""}
             if not url:
-                results.append(entry)
-                continue
-
+                return entry
             try:
                 if market == "OZON":
-                    entry.update(parse_ozon(driver, url))
+                    entry.update(parse_ozon(driver, url, navigate=navigate))
                 elif market == "WB":
-                    entry.update(parse_wb(driver, url))
+                    entry.update(parse_wb(driver, url, navigate=navigate))
                 elif market == "YANDEX":
-                    entry.update(parse_yandex(driver, url))
+                    entry.update(parse_yandex(driver, url, navigate=navigate))
                 else:
                     entry["title"] = ERROR
                     entry["price"] = ERROR
@@ -440,10 +550,61 @@ def parse_rows(
                 entry["title"] = ERROR
                 entry["price"] = ERROR
                 entry["price_card"] = ERROR if market == "OZON" else ""
+            return entry
 
-            results.append(entry)
+        if concurrency == 1:
+            for item in rows:
+                results.append(parse_item(item, navigate=True))
+        else:
+            handles = [driver.current_window_handle]
+            for _ in range(concurrency - 1):
+                driver.execute_script("window.open('about:blank');")
+            handles = driver.window_handles[:concurrency]
+            if len(handles) < concurrency:
+                concurrency = len(handles)
+                handles = handles[:concurrency]
+
+            pending = list(rows)
+            active: list[tuple[str, dict]] = []
+
+            while len(active) < len(handles) and pending:
+                item = pending.pop(0)
+                if not (item.get("url") or "").strip():
+                    results.append({"row": item.get("row") if "row" in item else item.get("id"), "title": ERROR, "price": ERROR, "price_card": "", "seller": ""})
+                    continue
+                handle = handles[len(active)]
+                driver.switch_to.window(handle)
+                try:
+                    driver.get((item.get("url") or "").strip())
+                except WebDriverException:
+                    pass
+                active.append((handle, item))
+
+            while active:
+                handle, item = active.pop(0)
+                driver.switch_to.window(handle)
+                results.append(parse_item(item, navigate=False))
+
+                next_item = None
+                while pending:
+                    candidate = pending.pop(0)
+                    if not (candidate.get("url") or "").strip():
+                        results.append({"row": candidate.get("row") if "row" in candidate else candidate.get("id"), "title": ERROR, "price": ERROR, "price_card": "", "seller": ""})
+                        continue
+                    next_item = candidate
+                    break
+
+                if next_item is None:
+                    continue
+
+                driver.switch_to.window(handle)
+                try:
+                    driver.get((next_item.get("url") or "").strip())
+                except WebDriverException:
+                    pass
+                active.append((handle, next_item))
     finally:
-        if driver is not None:
+        if created_driver and dispose_driver and driver is not None:
             try:
                 driver.quit()
             except Exception:
@@ -456,12 +617,14 @@ def process(input_path: Path, output_path: Path) -> None:
     with input_path.open("r", encoding="utf-8-sig") as f:
         payload = json.load(f)
     cfg = payload.get("config") or {}
+    concurrency = int(cfg.get("concurrency", 1) or 1)
     results = parse_rows(
         payload.get("rows", []),
         chrome_user_data=cfg.get("chrome_user_data"),
         chrome_profile=cfg.get("chrome_profile") or "Default",
         headless=bool(cfg.get("headless", True)),
         disable_media=bool(cfg.get("disable_media", False)),
+        concurrency=concurrency,
     )
     with output_path.open("w", encoding="utf-8") as f:
         json.dump({"rows": results}, f, ensure_ascii=False, indent=2)

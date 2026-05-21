@@ -46,6 +46,7 @@
         </div>
         {% endif %}
 
+        <div class="section-title">Внутренние настройки системы</div>
         <p class="hint">
             Используется готовый selenium-профиль для авторизации. Перед обновлением цен закрой браузер с этим профилем.
         </p>
@@ -66,6 +67,22 @@
             </label>
             <small class="dim">
                 Ускоряет парсинг и снижает потребление трафика. Текст и цены загружаются всё равно.
+            </small>
+
+            <label class="row checkbox">
+                <input type="checkbox" name="keep_browser_open" id="keep_browser_open" {% if cfg.keep_browser_open %}checked{% endif %}>
+                <span>Оставить браузер открытым между обновлениями</span>
+            </label>
+            <small class="dim">
+                Ускоряет последующие запуски, но оставляет окно Chrome открытым.
+            </small>
+
+            <label class="row slider-label">
+                <span>Параллельно открытых вкладок: <span id="concurrency-value">{{ cfg.concurrency }}</span></span>
+            </label>
+            <input type="range" name="concurrency" id="concurrency" min="1" max="20" value="{{ cfg.concurrency }}" step="1">
+            <small class="dim">
+                Чем больше вкладок — тем быстрее парсинг, но выше нагрузка на систему.
             </small>
 
             <div class="command-block">
@@ -139,6 +156,14 @@ document.getElementById('clear-errors-btn').addEventListener('click', async () =
     const r = await fetch('/clear_errors', { method: 'POST' });
     if (r.ok) location.reload();
 });
+
+const concurrencyRange = document.getElementById('concurrency');
+const concurrencyValue = document.getElementById('concurrency-value');
+if (concurrencyRange && concurrencyValue) {
+    concurrencyRange.addEventListener('input', () => {
+        concurrencyValue.textContent = concurrencyRange.value;
+    });
+}
 </script>
 </body>
 </html>

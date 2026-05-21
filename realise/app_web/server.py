@@ -8,7 +8,7 @@ from flask import Flask, jsonify, redirect, render_template, request, send_file,
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
-from parse_prices import default_user_data_dir, list_chrome_profiles, parse_rows, try_open_chrome
+from parse_prices import default_user_data_dir, list_chrome_profiles, parse_rows, try_open_chrome, build_driver
 
 
 def detect_market(url: str) -> str | None:
@@ -54,6 +54,44 @@ _state = {
     "err": 0,
     "message": "",
 }
+
+_shared_driver_lock = threading.Lock()
+_shared_driver = None
+_shared_driver_cfg = None
+
+
+def _is_driver_alive(driver) -> bool:
+    try:
+        return bool(driver.session_id)
+    except Exception:
+        return False
+
+
+def _close_shared_driver() -> None:
+    global _shared_driver, _shared_driver_cfg
+    with _shared_driver_lock:
+        if _shared_driver is not None:
+            try:
+                _shared_driver.quit()
+            except Exception:
+                pass
+            _shared_driver = None
+            _shared_driver_cfg = None
+
+
+def _get_shared_driver(cfg: dict):
+    global _shared_driver, _shared_driver_cfg
+    with _shared_driver_lock:
+        if _shared_driver is not None and _shared_driver_cfg == cfg and _is_driver_alive(_shared_driver):
+            return _shared_driver
+        _close_shared_driver()
+        _shared_driver = build_driver(
+            headless=cfg["headless"],
+            disable_media=cfg["disable_media"],
+            page_load_strategy="none" if cfg["concurrency"] > 1 else "normal",
+        )
+        _shared_driver_cfg = cfg.copy()
+        return _shared_driver
 
 
 def db():
@@ -208,7 +246,20 @@ def effective_chrome_config() -> dict:
     headless = headless_raw not in ("0", "false", "False", "")
     disable_media_raw = get_setting("disable_media", "0")
     disable_media = disable_media_raw not in ("0", "false", "False", "")
-    return {"headless": headless, "disable_media": disable_media}
+    keep_open_raw = get_setting("keep_browser_open", "0")
+    keep_browser_open = keep_open_raw not in ("0", "false", "False", "")
+    concurrency_raw = get_setting("concurrency", "1")
+    try:
+        concurrency = int(concurrency_raw)
+    except ValueError:
+        concurrency = 1
+    concurrency = max(1, min(20, concurrency))
+    return {
+        "headless": headless,
+        "disable_media": disable_media,
+        "keep_browser_open": keep_browser_open,
+        "concurrency": concurrency,
+    }
 
 
 @app.route("/")
@@ -350,11 +401,24 @@ def _refresh_worker(item_ids: list[int] | None, profile_id: int | None = None):
             for it in items
         ]
         cfg = effective_chrome_config()
-        results = parse_rows(
-            rows_for_parser,
-            headless=cfg["headless"],
-            disable_media=cfg["disable_media"],
-        )
+        if cfg["keep_browser_open"]:
+            driver = _get_shared_driver(cfg)
+            results = parse_rows(
+                rows_for_parser,
+                headless=cfg["headless"],
+                disable_media=cfg["disable_media"],
+                concurrency=cfg["concurrency"],
+                driver=driver,
+                dispose_driver=False,
+            )
+        else:
+            _close_shared_driver()
+            results = parse_rows(
+                rows_for_parser,
+                headless=cfg["headless"],
+                disable_media=cfg["disable_media"],
+                concurrency=cfg["concurrency"],
+            )
 
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         ok = 0
@@ -433,8 +497,16 @@ def settings():
     if request.method == "POST":
         headless = "1" if request.form.get("headless") else "0"
         disable_media = "1" if request.form.get("disable_media") else "0"
+        keep_browser_open = "1" if request.form.get("keep_browser_open") else "0"
+        concurrency = request.form.get("concurrency", "1").strip()
+        try:
+            concurrency_value = max(1, min(20, int(concurrency)))
+        except ValueError:
+            concurrency_value = 1
         set_setting("headless", headless)
         set_setting("disable_media", disable_media)
+        set_setting("keep_browser_open", keep_browser_open)
+        set_setting("concurrency", str(concurrency_value))
         return redirect(url_for("settings"))
 
     cfg = effective_chrome_config()
@@ -642,5 +714,3 @@ if __name__ == "__main__":
     init_db()
     app.run(host="127.0.0.1", port=5000, debug=False)
 
-
-#test
