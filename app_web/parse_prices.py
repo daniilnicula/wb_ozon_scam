@@ -506,6 +506,7 @@ def parse_rows(
             try:
                 if not driver.session_id:
                     raise WebDriverException("Driver session has ended")
+                _ = driver.current_window_handle
             except Exception:
                 driver = build_driver(
                     headless=headless,
@@ -604,6 +605,24 @@ def parse_rows(
                     pass
                 active.append((handle, next_item))
     finally:
+        if driver is not None and not dispose_driver:
+            try:
+                handles = driver.window_handles
+                for handle in handles[1:]:
+                    try:
+                        driver.switch_to.window(handle)
+                        driver.close()
+                    except WebDriverException:
+                        pass
+                if driver.window_handles:
+                    driver.switch_to.window(driver.window_handles[0])
+                    try:
+                        driver.get("about:blank")
+                    except WebDriverException:
+                        pass
+            except WebDriverException:
+                pass
+
         if created_driver and dispose_driver and driver is not None:
             try:
                 driver.quit()

@@ -62,7 +62,10 @@ _shared_driver_cfg = None
 
 def _is_driver_alive(driver) -> bool:
     try:
-        return bool(driver.session_id)
+        if not driver or not driver.session_id:
+            return False
+        _ = driver.current_window_handle
+        return True
     except Exception:
         return False
 
@@ -79,17 +82,37 @@ def _close_shared_driver() -> None:
             _shared_driver_cfg = None
 
 
+def _create_shared_driver(cfg: dict):
+    driver = build_driver(
+        headless=cfg["headless"],
+        disable_media=cfg["disable_media"],
+        page_load_strategy="none" if cfg["concurrency"] > 1 else "normal",
+    )
+    try:
+        driver.get("about:blank")
+        _ = driver.current_window_handle
+    except Exception:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        raise
+    return driver
+
+
 def _get_shared_driver(cfg: dict):
     global _shared_driver, _shared_driver_cfg
     with _shared_driver_lock:
         if _shared_driver is not None and _shared_driver_cfg == cfg and _is_driver_alive(_shared_driver):
             return _shared_driver
-        _close_shared_driver()
-        _shared_driver = build_driver(
-            headless=cfg["headless"],
-            disable_media=cfg["disable_media"],
-            page_load_strategy="none" if cfg["concurrency"] > 1 else "normal",
-        )
+        if _shared_driver is not None:
+            try:
+                _shared_driver.quit()
+            except Exception:
+                pass
+            _shared_driver = None
+            _shared_driver_cfg = None
+        _shared_driver = _create_shared_driver(cfg)
         _shared_driver_cfg = cfg.copy()
         return _shared_driver
 
